@@ -20,6 +20,7 @@ from kivy.metrics import dp
 from kivy.properties import BooleanProperty, StringProperty
 from kivy.core.window import Window
 from kivy.animation import Animation
+from risk_analyzer import analyze_in_background
 
 Window.size = (360, 700)
 
@@ -240,38 +241,158 @@ class BottomNav(BoxLayout):
         self._top.size = (self.width, dp(1))
 
 
+class SMSCard(BoxLayout):
+    """One card per analyzed SMS shown in the feed."""
+    def __init__(self, sms_text, result, **kwargs):
+        super().__init__(orientation='vertical',
+                         size_hint_y=None, height=dp(110),
+                         padding=dp(12), spacing=dp(6), **kwargs)
+        add_bg(self, BG1, radius=dp(8))
+
+        score  = result['behavioral_risk_score']
+        level  = result['risk_level']
+        tactic = result['dominant_tactic']
+
+        # Color code by risk level
+        level_color = {
+            'LOW':      ACCENT,
+            'MEDIUM':   C_AMBER,
+            'HIGH':     C_RED,
+            'CRITICAL': C_RED,
+        }.get(level, TEXT_SEC)
+
+        # Top row: risk level badge + score
+        top = BoxLayout(size_hint_y=None, height=dp(22), spacing=dp(8))
+        top.add_widget(Label(
+            text=level, font_size=dp(10), bold=True,
+            color=level_color, size_hint_x=None, width=dp(70),
+            halign='left'
+        ))
+        top.add_widget(Label(
+            text=f'Score: {score}', font_size=dp(10),
+            color=TEXT_SEC, halign='left'
+        ))
+
+        # SMS preview text
+        preview = Label(
+            text=sms_text[:80] + ('...' if len(sms_text) > 80 else ''),
+            font_size=dp(11), color=TEXT_PRI,
+            halign='left', valign='top',
+            size_hint_y=None, height=dp(36)
+        )
+        preview.bind(size=lambda i, v: setattr(i, 'text_size', v))
+
+        # Bottom row: dominant tactic
+        bottom = Label(
+            text=f'Tactic: {tactic}', font_size=dp(9),
+            color=TEXT_DIM, halign='left',
+            size_hint_y=None, height=dp(18)
+        )
+        bottom.bind(size=lambda i, v: setattr(i, 'text_size', v))
+
+        for w in (top, preview, bottom):
+            self.add_widget(w)
 
 class HomeScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         root = BoxLayout(orientation='vertical')
-        add_bg(root, BG0)  #Sets the orientation and background color for this specific screen.
+        add_bg(root, BG0)
 
         self.header = HeaderBar()
 
         stats = BoxLayout(size_hint_y=None, height=dp(84),
-                          spacing=dp(6), padding=[dp(10), dp(8)]) #Makes the container for the top Risk Viewer part
-        add_bg(stats, BG0) #Sets the background for the layout, same as everything else.
-        self.s_total = StatCard('TOTAL',    '0', TEXT_PRI) #change the value of this number when scams are detected.
+                          spacing=dp(6), padding=[dp(10), dp(8)])
+        add_bg(stats, BG0)
+        self.s_total = StatCard('TOTAL',    '0', TEXT_PRI)
         self.s_high  = StatCard('HIGH+',    '0', C_RED)
         self.s_avg   = StatCard('AVG RISK', '—', TEXT_SEC)
         self.s_scam  = StatCard('SCAM',     '0', C_RED)
 
         for c in (self.s_total, self.s_high, self.s_avg, self.s_scam):
-            stats.add_widget(c) #Adds all the created widgets with the labels and texts.
+            stats.add_widget(c)
 
         scroll_header = BoxLayout(size_hint_y=None, height=dp(30),
-                             padding=[dp(14), 0])
-
-
+                                  padding=[dp(14), 0])
         self.scroll = ScrollView(do_scroll_x=False)
         self._empty = EmptyState()
+
+        
+        self._feed = BoxLayout(orientation='vertical',
+                               size_hint_y=None, spacing=dp(8),
+                               padding=[dp(8), dp(8)])
+        self._feed.bind(minimum_height=self._feed.setter('height'))
+        self._feed.add_widget(self._empty)
+        self.scroll.add_widget(self._feed)
+        
+
+        # tracking stats
+        self._total = 0
+        self._high  = 0
+        self._scores = []
+        
+        # TEMPORARY TEST BUTTON: uncomment to demo and add test_btn to the for loop below
+        #
+        # test_btn = Button(
+        #     text='Simulate SMS',
+        #     size_hint_y=None, height=dp(44),
+        #     background_color=ACCENT,
+        #     color=BG0,
+        #     background_normal=''
+        # )
+        # test_btn.bind(on_press=lambda _: self.receive_sms(
+        #     "URGENT: You have WON a £1000 prize! Claim NOW. Call 09061701461"
+        # ))
+
+
 
         for w in (self.header, stats, scroll_header, self.scroll):
             root.add_widget(w)
 
-        self.add_widget(root) #adds the scrolling widget.
+        self.add_widget(root)
 
+    def receive_sms(self, sms_text: str):
+        """Call this when a new SMS arrives. Triggers background analysis."""
+        self.header.set_status('SCANNING...', color=C_AMBER)
+        analyze_in_background(
+            sms_text,
+            lambda result: self.on_analysis_done(sms_text, result)
+        )
+
+    def on_analysis_done(self, sms_text: str, result: dict):
+        """Called on main thread when analysis is complete."""
+        score = result['behavioral_risk_score']
+        level = result['risk_level']
+
+        # Remove empty state on first result
+        if self._empty.parent:
+            self._feed.remove_widget(self._empty)
+
+        # Add SMS card to top of feed
+        card = SMSCard(sms_text, result)
+        self._feed.add_widget(card, index=len(self._feed.children))
+
+        # Update stat cards
+        self._total += 1
+        self._scores.append(score)
+        avg = round(sum(self._scores) / len(self._scores), 2)
+        self.s_total.update(self._total)
+        self.s_avg.update(avg)
+
+        if level in ('HIGH', 'CRITICAL'):
+            self._high += 1
+            self.s_high.update(self._high)
+            self.s_scam.update(self._high)
+
+        # Update header status
+        status_color = {
+            'LOW':      ACCENT,
+            'MEDIUM':   C_AMBER,
+            'HIGH':     C_RED,
+            'CRITICAL': C_RED,
+        }.get(level, ACCENT)
+        self.header.set_status(level, color=status_color)
+        
 class PreferencesScreen(Screen):
     """ This class is the second preferences screen, and consists of toggleable buttons and a few more labels."""
     def __init__(self, **kwargs):
@@ -352,6 +473,8 @@ class RunApp(App):
     def build(self):
         Window.clearcolor = BG0
         return RootLayout()
+
+
 
 def main():
     """Runs the app instance. This essentially hands over complete flow control to kivy, and it manages all GUI elements from there on out."""
