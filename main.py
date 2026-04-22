@@ -21,6 +21,7 @@ from kivy.properties import BooleanProperty, StringProperty
 from kivy.core.window import Window
 from kivy.animation import Animation
 from risk_analyzer import analyze_in_background
+from sms_bridge import create_bridge_for_app
 
 Window.size = (360, 700)
 
@@ -317,34 +318,19 @@ class HomeScreen(Screen):
         self.scroll = ScrollView(do_scroll_x=False)
         self._empty = EmptyState()
 
-        
+
         self._feed = BoxLayout(orientation='vertical',
                                size_hint_y=None, spacing=dp(8),
                                padding=[dp(8), dp(8)])
         self._feed.bind(minimum_height=self._feed.setter('height'))
         self._feed.add_widget(self._empty)
         self.scroll.add_widget(self._feed)
-        
+
 
         # tracking stats
         self._total = 0
         self._high  = 0
         self._scores = []
-        
-        # TEMPORARY TEST BUTTON: uncomment to demo and add test_btn to the for loop below
-        #
-        # test_btn = Button(
-        #     text='Simulate SMS',
-        #     size_hint_y=None, height=dp(44),
-        #     background_color=ACCENT,
-        #     color=BG0,
-        #     background_normal=''
-        # )
-        # test_btn.bind(on_press=lambda _: self.receive_sms(
-        #     "URGENT: You have WON a £1000 prize! Claim NOW. Call 09061701461"
-        # ))
-
-
 
         for w in (self.header, stats, scroll_header, self.scroll):
             root.add_widget(w)
@@ -353,11 +339,11 @@ class HomeScreen(Screen):
 
     def receive_sms(self, sms_text: str):
         """Call this when a new SMS arrives. Triggers background analysis."""
-        self.header.set_status('SCANNING...', color=C_AMBER)
+        self.header.set_status('SCANNING', color=C_AMBER)
         analyze_in_background(
             sms_text,
             lambda result: self.on_analysis_done(sms_text, result)
-        )
+        ) #this gets the sms into on_analysis done
 
     def on_analysis_done(self, sms_text: str, result: dict):
         """Called on main thread when analysis is complete."""
@@ -368,11 +354,11 @@ class HomeScreen(Screen):
         if self._empty.parent:
             self._feed.remove_widget(self._empty)
 
-        # Add SMS card to top of feed
+        #adding a new sms box
         card = SMSCard(sms_text, result)
         self._feed.add_widget(card, index=len(self._feed.children))
 
-        # Update stat cards
+        # Update stat boxes
         self._total += 1
         self._scores.append(score)
         avg = round(sum(self._scores) / len(self._scores), 2)
@@ -392,7 +378,7 @@ class HomeScreen(Screen):
             'CRITICAL': C_RED,
         }.get(level, ACCENT)
         self.header.set_status(level, color=status_color)
-        
+
 class PreferencesScreen(Screen):
     """ This class is the second preferences screen, and consists of toggleable buttons and a few more labels."""
     def __init__(self, **kwargs):
@@ -472,8 +458,21 @@ class RunApp(App):
 
     def build(self):
         Window.clearcolor = BG0
-        return RootLayout()
+        self._root_layout = RootLayout()
+        return self._root_layout
 
+    def on_start(self):
+        """Called by Kivy after the window is fully built and displayed.
+        We start the SMS bridge here so the UI is ready to receive notifications.
+        """
+        home = self._root_layout.home
+        self._bridge = create_bridge_for_app(home)
+        self._bridge.start()
+
+    def on_stop(self):
+        """I have to close the socket here, because if we didnt, that socket would be open constantly and it would throw an error."""
+        if hasattr(self, '_bridge'):
+            self._bridge.stop()
 
 
 def main():
