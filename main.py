@@ -1,5 +1,5 @@
 """
-RiskGuard — Base App
+NoRush: Mobile App
 Base App. This still needs some work, but this is basically what the base app will look like.
 Run on desktop:
   pip install kivy
@@ -81,7 +81,7 @@ class Divider(Widget):
 
 
 class HeaderBar(BoxLayout):
-    def __init__(self, title="RISKGUARD", show_back=False, on_back=None, **kwargs):
+    def __init__(self, title="NoRush", show_back=False, on_back=None, **kwargs):
         super().__init__(
             orientation="horizontal",
             size_hint_y=None,
