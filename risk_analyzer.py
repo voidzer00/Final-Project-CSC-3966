@@ -319,47 +319,47 @@ class URLAnalyzer:
         except Exception:
             return {"url_risk_score": 0.5, "url_flags": ["parse_error"]}
 
-        # Rule 1: URL shortener (hides destination) 
+        # Rule 1: URL shortener (hides destination)
         if any(s in domain for s in URL_SHORTENERS):
             flags.append("url_shortener")
             score += 0.40
 
-        # Rule 2: High-risk abused hosting (ratio > 7x) 
+        # Rule 2: High-risk abused hosting (ratio > 7x)
         if any(h in domain for h in HIGH_RISK_HOSTS):
             flags.append("abused_hosting")
             score += 0.35
 
-        # Rule 3: Phishing-only TLD (ratio > 100x) 
+        # Rule 3: Phishing-only TLD (ratio > 100x)
         if any((tld + "/") in full or (tld + "?") in full or (tld + "#") in full
                or full.endswith(tld) for tld in PHISHING_ONLY_TLDS):
             flags.append("phishing_only_tld")
             score += 0.35
 
-        # Rule 4: High-ratio TLD (ratio 10x–100x) 
+        # Rule 4: High-ratio TLD (ratio 10x–100x)
         elif any((tld + "/") in full or (tld + "?") in full
                  or full.endswith(tld) for tld in HIGH_RATIO_TLDS):
             flags.append("high_risk_tld")
             score += 0.20
 
-        # Rule 5: High-risk keywords in URL (ratio > 20x) 
+        # Rule 5: High-risk keywords in URL (ratio > 20x)
         high_kw_hits = [kw for kw in HIGH_RISK_URL_KEYWORDS if kw in full]
         if high_kw_hits:
             flags.append(f"high_risk_keywords:{','.join(high_kw_hits[:3])}")
             score += min(len(high_kw_hits) * 0.12, 0.35)
 
-        # Rule 6: Medium-risk keywords (ratio 2x–20x) 
+        # Rule 6: Medium-risk keywords (ratio 2x–20x)
         elif not high_kw_hits:
             med_kw_hits = [kw for kw in MEDIUM_RISK_URL_KEYWORDS if kw in full]
             if med_kw_hits:
                 flags.append(f"medium_risk_keywords:{','.join(med_kw_hits[:3])}")
                 score += min(len(med_kw_hits) * 0.07, 0.20)
 
-        # Rule 7: IP address instead of domain (ratio 56x) 
+        # Rule 7: IP address instead of domain (ratio 56x)
         if re.match(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', domain):
             flags.append("ip_address_url")
             score += 0.40
 
-        # Rule 8: Excessive subdomains (depth 3+ has 4.5x ratio) 
+        # Rule 8: Excessive subdomains (depth 3+ has 4.5x ratio)
         subdomain_depth = len(domain.split(".")) - 2
         if subdomain_depth >= 3:
             flags.append("excessive_subdomains")
@@ -376,9 +376,6 @@ class URLAnalyzer:
         }
 
 
-# ---------------------------------------------------------------------------
-# RISK ANALYZER (main entry point)
-# ---------------------------------------------------------------------------
 
 class RiskAnalyzer:
     """
@@ -464,9 +461,59 @@ class RiskAnalyzer:
         }
 
 
-# ---------------------------------------------------------------------------
-# KIVY INTEGRATION HELPER
-# ---------------------------------------------------------------------------
+
+REMOTE_SERVER_URL = "https://gladly-polka-gliding.ngrok-free.dev/analyze"
+API_SECRET        = "1123581321"
+
+
+
+
+def analyze_remote(sms_text: str, on_result, on_error=None) -> None:
+    """
+    POST the SMS text to the remote PC server and return the result.
+    Falls back to local analysis automatically if the server is unreachable.
+    Called from analyze_in_background() when battery saver mode is ON.
+    """
+    import urllib.request
+    import urllib.error
+    import json
+    from threading import Thread
+
+    try:
+        from kivy.clock import Clock
+        _schedule = lambda fn: Clock.schedule_once(lambda dt: fn())
+    except ImportError:
+        _schedule = lambda fn: fn()
+
+    def _run():
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        payload = json.dumps({"text": sms_text}).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(
+                REMOTE_SERVER_URL,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-Key": API_SECRET,
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            print("[RemoteAnalysis] Success.")
+            _schedule(lambda: on_result(result))
+        except Exception as e:
+            print(f"[RemoteAnalysis] Failed: {e}. Falling back to local.")
+            result = RiskAnalyzer().analyze(sms_text)
+            _schedule(lambda: on_result(result))
+
+    Thread(target=_run, daemon=True).start()
+
 
 def analyze_in_background(sms_text: str, on_result) -> None:
     """
@@ -515,7 +562,7 @@ if __name__ == "__main__":
         ("CRITICAL: multi-tactic smishing",
          "WINNER!! As a valued network customer you have been selected to receive a £900 prize reward! To claim call 09061701461. Valid 12 hours only."),
 
-        #  Expected HIGH 
+        #  Expected HIGH
         ("HIGH: authority + loss + phishing URL (000webhostapp)",
          "Your bank account has been suspended. Verify immediately at http://secure-bank-login.000webhostapp.com"),
 
@@ -525,14 +572,14 @@ if __name__ == "__main__":
         ("HIGH: paypal phishing URL (3085x ratio keyword)",
          "Your PayPal account needs verification. Click: http://secure-paypal-login.firebaseapp.com"),
 
-        #  Expected MEDIUM 
+        #  Expected MEDIUM
         ("MEDIUM: reward + action, no URL",
          "Free entry to win a Nokia phone! Text WIN to 87099. Guaranteed prize every week."),
 
         ("MEDIUM: URL shortener",
          "Exclusive offer just for you: https://bit.ly/3xFkP9q - don't miss out!"),
 
-        #  Expected LOW 
+        #  Expected LOW
         ("LOW: legitimate message",
          "Hey, are you coming to dinner tonight? Let me know by 6pm."),
 
