@@ -1,9 +1,6 @@
 """
-NoRush: Mobile App
-Base App. This still needs some work, but this is basically what the base app will look like.
-Run on desktop:
-  pip install kivy
-  python main.py
+NORUSH — Final App!
+This is the final norush app. This is where metrics are updated, messages are passed into here from android_sms.py, and send to riskanalyzer.
 """
 
 #IMPORTS
@@ -22,7 +19,7 @@ from kivy.core.window import Window
 from kivy.animation import Animation
 from kivy.clock import Clock
 
-from sms_bridge import create_bridge_for_app
+from android_sms import create_receiver_for_app
 
 from storage import (
     save_decision,
@@ -32,14 +29,12 @@ from storage import (
     save_attention_summary,
     save_reward_summary,
 )
-from risk_analyzer import analyze_in_background
+from risk_analyzer import analyze_in_background, analyze_remote
 
 import random
 import time
+import os
 
-
-#APP SETUP
-Window.size = (360, 700)
 
 BG0 = (0.06, 0.06, 0.07, 1)
 BG1 = (0.10, 0.10, 0.12, 1)
@@ -48,12 +43,14 @@ ACCENT = (0.38, 0.78, 0.60, 1)
 TEXT_PRI = (0.91, 0.91, 0.93, 1)
 TEXT_SEC = (0.50, 0.50, 0.55, 1)
 TEXT_DIM = (0.28, 0.28, 0.32, 1)
-C_RED = (0.93, 0.38, 0.28, 1)
+C_RED   = (0.93, 0.38, 0.28, 1)
 C_AMBER = (0.90, 0.68, 0.22, 1)
-C_BLUE = (0.25, 0.55, 0.85, 1)
+C_BLUE  = (0.25, 0.55, 0.85, 1)
 
 
 def add_bg(widget, color, radius=0):
+    """Paint a solid (optionally rounded) background rectangle on *widget*.
+    """
     with widget.canvas.before:
         Color(*color)
         if radius:
@@ -69,6 +66,7 @@ def add_bg(widget, color, radius=0):
 
 
 class Divider(Widget):
+    """A 1 dp horizontal line used to separate rows inside PrefSection."""
     def __init__(self, **kwargs):
         super().__init__(size_hint_y=None, height=dp(1), **kwargs)
         with self.canvas:
@@ -81,6 +79,7 @@ class Divider(Widget):
 
 
 class HeaderBar(BoxLayout):
+    """Top navigation bar with optional back button, logo dot, title, and status text."""
     def __init__(self, title="NoRush", show_back=False, on_back=None, **kwargs):
         super().__init__(
             orientation="horizontal",
@@ -92,6 +91,7 @@ class HeaderBar(BoxLayout):
         )
         add_bg(self, BG1)
 
+        # Optional back arrow rendered as a plain text button.
         if show_back:
             btn = Button(
                 text="<-",
@@ -121,6 +121,8 @@ class HeaderBar(BoxLayout):
             size_hint_x=1,
             halign="left",
         )
+        # Status label — updated at runtime by set_status() to show the
+        # current scanning state ("ON", "SCANNING", risk level, etc.).
         self._status_lbl = Label(
             text="ON",
             font_size=dp(9),
@@ -133,11 +135,13 @@ class HeaderBar(BoxLayout):
             self.add_widget(w)
 
     def set_status(self, text, color=None):
+        """Update the right-aligned status indicator text and colour."""
         self._status_lbl.text = text
         self._status_lbl.color = color or ACCENT
 
 
 class StatCard(BoxLayout):
+    """A compact card showing a large metric value above a small key label."""
     def __init__(self, key, value="—", val_color=None, **kwargs):
         super().__init__(
             orientation="vertical",
@@ -159,12 +163,17 @@ class StatCard(BoxLayout):
         self.add_widget(self.key_lbl)
 
     def update(self, value, color=None):
+        """Refresh the displayed value; optionally change its colour."""
         self.val_lbl.text = str(value)
         if color:
             self.val_lbl.color = color
 
 
 class EmptyState(BoxLayout):
+    """Placeholder widget shown in the feed when no messages have been analyzed yet.
+
+    Fades in via an opacity animation to avoid a jarring instant appearance.
+    """
     def __init__(self, **kwargs):
         super().__init__(
             orientation="vertical",
@@ -193,12 +202,15 @@ class EmptyState(BoxLayout):
         msg.bind(size=lambda i, v: setattr(i, "text_size", v))
         for w in (icon, msg):
             self.add_widget(w)
+        # Start invisible and animate to full opacity over 600 ms.
         self.opacity = 0
         Animation(opacity=1, duration=0.6).start(self)
 
 
 class PrefToggle(BoxLayout):
-    def __init__(self, title, subtitle, key, default=True, **kwargs):
+    """A labelled on/off toggle row for the preferences screen.
+    """
+    def __init__(self, title, subtitle, key, default=True, on_change=None, **kwargs):
         super().__init__(
             orientation="horizontal",
             size_hint_y=None,
@@ -226,16 +238,29 @@ class PrefToggle(BoxLayout):
             lbl.bind(size=lambda i, v: setattr(i, "text_size", v))
             col.add_widget(lbl)
 
+        # Load persisted value for battery_saver, fall back to default
+        if key == "battery_saver":
+            state = load_state()
+            default = state.get("battery_saver", default)
+
         sw = Switch(active=default, size_hint=(None, 1), width=dp(60))
-        sw.bind(active=lambda i, v, k=key: print(f"[Pref] {k} = {v}"))
+
+        def _on_active(instance, value):
+            print(f"[Pref] {key} = {value}")
+            if on_change:
+                on_change(value)
+
+        sw.bind(active=_on_active)
 
         self.add_widget(col)
         self.add_widget(sw)
 
 
 class PrefSection(BoxLayout):
+    """A vertically stacked group of preference rows under a heading label."""
     def __init__(self, heading, **kwargs):
         super().__init__(orientation="vertical", size_hint_y=None, spacing=0, **kwargs)
+        # height tracks content so the parent ScrollView can size correctly.
         self.bind(minimum_height=self.setter("height"))
         hdr = Label(
             text=heading.upper(),
@@ -250,6 +275,7 @@ class PrefSection(BoxLayout):
         self.add_widget(hdr)
 
     def add_row(self, row):
+        """Append a Divider then *row* to the section."""
         self.add_widget(Divider())
         self.add_widget(row)
 
@@ -270,21 +296,25 @@ class NavTab(BoxLayout):
         self._bar.bind(pos=self._draw_bar, size=self._draw_bar)
 
     def on_touch_down(self, touch):
+        """Fire the stored callback when the user taps anywhere on this tab."""
         if self.collide_point(*touch.pos) and self._cb:
             self._cb()
             return True
         return super().on_touch_down(touch)
 
     def set_callback(self, cb):
+        """Register the callable that is invoked on tap."""
         self._cb = cb
 
     def _refresh(self, *_):
+        """Re-colour the icon and text to reflect the current active state."""
         col = ACCENT if self.active else TEXT_DIM
         self._icon_lbl.color = col
         self._text_lbl.color = col
         self._draw_bar()
 
     def _draw_bar(self, *_):
+        """Draw (or clear) the active-indicator bar above the tab icon."""
         self._bar.canvas.clear()
         if self.active:
             with self._bar.canvas:
@@ -297,6 +327,7 @@ class NavTab(BoxLayout):
 
 
 class BottomNav(BoxLayout):
+    """Persistent two-tab navigation bar (Feed / Settings) at the bottom of the screen."""
     def __init__(self, on_nav, **kwargs):
         super().__init__(orientation="horizontal", size_hint_y=None, height=dp(54), **kwargs)
         add_bg(self, BG1)
@@ -309,6 +340,7 @@ class BottomNav(BoxLayout):
         self.set_active("home")
 
     def set_active(self, key):
+        """Mark the tab matching *key* as active; deactivate all others."""
         for k, t in self._tabs.items():
             t.active = (k == key)
 
@@ -400,6 +432,35 @@ class HomeScreen(Screen):
         for c in (self.s_total, self.s_high, self.s_avg, self.s_reports, self.s_behavior):
             stats.add_widget(c)
 
+        # Task buttons sit ABOVE the scroll — always visible
+        self.attention_btn = Button(
+            text="Open Attention Task",
+            size_hint_y=None,
+            height=dp(48),
+            background_normal="",
+            background_color=(0.80, 0.45, 0.05, 1),  # amber-orange
+        )
+        self.reward_btn = Button(
+            text="Open Reward Task",
+            size_hint_y=None,
+            height=dp(48),
+            background_normal="",
+            background_color=(0.70, 0.55, 0.05, 1),  # amber-yellow
+        )
+        self.attention_btn.bind(on_press=self._open_attention)
+        self.reward_btn.bind(on_press=self._open_reward)
+
+        task_btn_bar = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(56),
+            spacing=dp(8),
+            padding=[dp(8), dp(4)],
+        )
+        add_bg(task_btn_bar, BG1)
+        task_btn_bar.add_widget(self.attention_btn)
+        task_btn_bar.add_widget(self.reward_btn)
+
         self.scroll = ScrollView(do_scroll_x=False)
         self._feed = BoxLayout(
             orientation="vertical",
@@ -411,81 +472,49 @@ class HomeScreen(Screen):
         self._empty = EmptyState()
         self._feed.add_widget(self._empty)
 
-        btn_wrap = BoxLayout(
-            orientation="vertical",
-            size_hint_y=None,
-            spacing=dp(8),
-            height=dp(224),
-        )
-        self.demo_risky_btn = Button(
-            text="Simulate Risky Message",
-            size_hint_y=None,
-            height=dp(48),
-            background_normal="",
-            background_color=(0.30, 0.20, 0.10, 1),
-        )
-        self.demo_safe_btn = Button(
-            text="Simulate Safe Message",
-            size_hint_y=None,
-            height=dp(48),
-            background_normal="",
-            background_color=(0.12, 0.28, 0.18, 1),
-        )
-        self.attention_btn = Button(
-            text="Open Attention Task",
-            size_hint_y=None,
-            height=dp(48),
-            background_normal="",
-            background_color=(0.10, 0.25, 0.35, 1),
-        )
-        self.reward_btn = Button(
-            text="Open Reward Task",
-            size_hint_y=None,
-            height=dp(48),
-            background_normal="",
-            background_color=(0.25, 0.18, 0.35, 1),
-        )
-        self.reward_btn.bind(on_press=self._open_reward)
-
-        self.demo_risky_btn.bind(
-            on_press=lambda *_: self.receive_sms(
-                "URGENT: Your bank account has been suspended. Verify now at "
-                "http://secure-bank-login.000webhostapp.com"
-            )
-        )
-        self.demo_safe_btn.bind(
-            on_press=lambda *_: self.receive_sms(
-                "Hey, are you still coming to dinner tonight? Let me know by 6."
-            )
-        )
-        self.attention_btn.bind(on_press=self._open_attention)
-
-        for w in (self.demo_risky_btn, self.demo_safe_btn, self.attention_btn, self.reward_btn):
-            btn_wrap.add_widget(w)
-        self._feed.add_widget(btn_wrap)
-
         self.scroll.add_widget(self._feed)
 
         root.add_widget(self.header)
         root.add_widget(stats)
+        root.add_widget(task_btn_bar)
         root.add_widget(self.scroll)
         self.add_widget(root)
 
     def receive_sms(self, sms_text: str):
+        """Entry point called by AndroidSMSReceiver whenever a new SMS arrives.
+
+        Sets the header to "SCANNING" immediately for visual feedback, then
+        dispatches analysis to a background thread to keep the UI responsive.
+        Routes to remote server or local analysis based on battery_saver setting.
+        """
         self.header.set_status("SCANNING", color=C_AMBER)
-        analyze_in_background(sms_text, lambda result: self.on_analysis_done(sms_text, result))
+        state = load_state()
+
+        def _done(result):
+            # Always dispatch to the Kivy main thread — analysis runs in a
+            # background thread and Kivy UI calls are not thread-safe.
+            Clock.schedule_once(lambda dt: self.on_analysis_done(sms_text, result), 0)
+
+        if state.get("battery_saver", False):
+            # Battery saver ON: offload heavy analysis to the remote PC server.
+            analyze_remote(sms_text, _done)
+        else:
+            # Battery saver OFF: run analysis on-device in a background thread.
+            analyze_in_background(sms_text, _done)
 
     def on_analysis_done(self, sms_text: str, result: dict):
-        if self._empty.parent:
-            self._feed.remove_widget(self._empty)
-
-        btn_wrap = self._feed.children[0]
-        self._feed.remove_widget(btn_wrap)
-        self._feed.add_widget(SMSCard(sms_text, result))
-        self._feed.add_widget(btn_wrap)
-
+        """Called on the main thread once risk analysis completes.
+        """
         score_pct = int(round(result["behavioral_risk_score"] * 100))
         level = result["risk_level"]
+        dominant_tactic = result.get("dominant_tactic", "unknown")
+
+        # Remove the empty-state placeholder on first real message.
+        if self._empty in self._feed.children:
+            self._feed.remove_widget(self._empty)
+
+        self._feed.add_widget(SMSCard(sms_text, result))
+
         status_color = {
             "LOW": ACCENT,
             "MEDIUM": C_AMBER,
@@ -495,14 +524,19 @@ class HomeScreen(Screen):
         self.header.set_status(level, color=status_color)
 
         if score_pct >= 50:
+            # High / critical risk — show the friction intervention screen.
             screen = self.manager.get_screen("intervention")
-            screen.load_message(sms_text, score_pct)
+            screen.load_message(sms_text, score_pct, dominant_tactic=dominant_tactic)
             self.manager.transition = SlideTransition(direction="left")
             self.manager.current = "intervention"
         else:
+            # Low-risk messages are never shown in the intervention screen,
+            # so save them here directly — high-risk are saved on user action.
+            save_decision("auto_cleared", sms_text, score_pct, 0, dominant_tactic=dominant_tactic)
             self.refresh_stats()
 
     def refresh_stats(self):
+        """Recompute and redraw all five stat cards from persisted decision log."""
         decisions = load_decisions()
         state = load_state()
 
@@ -528,13 +562,41 @@ class HomeScreen(Screen):
         self.header.set_status(level, C_AMBER if level != "UNKNOWN" else ACCENT)
 
     def on_pre_enter(self, *args):
+        """Rebuild the feed from the persistent decision log each time the screen is entered.
+        """
+        decisions = load_decisions()
         self.refresh_stats()
+        self._feed.clear_widgets()
+
+        if not decisions:
+            # Nothing logged yet — show the empty state placeholder.
+            self._empty = EmptyState()
+            self._feed.add_widget(self._empty)
+            return
+
+        for entry in decisions:
+            # Re-derive risk level from the stored score percentage so the
+            # feed card colours match the current thresholds.
+            score = entry.get("risk_score", 0) / 100
+            if score < 0.40: level = "LOW"
+            elif score < 0.65: level = "MEDIUM"
+            elif score < 0.85: level = "HIGH"
+            else: level = "CRITICAL"
+
+            result = {
+                "behavioral_risk_score": score,
+                "risk_level": level,
+                "dominant_tactic": entry.get("dominant_tactic", "unknown"),
+            }
+            self._feed.add_widget(SMSCard(entry.get("message_text", ""), result))
 
     def _open_attention(self, *_):
+        """Navigate to the attention (go/no-go) task screen."""
         self.manager.transition = SlideTransition(direction="left")
         self.manager.current = "attention"
 
     def _open_reward(self, *_):
+        """Navigate to the reward-sensitivity task screen."""
         self.manager.transition = SlideTransition(direction="left")
         self.manager.current = "reward"
 
@@ -555,44 +617,55 @@ class PreferencesScreen(Screen):
         )
         layout.bind(minimum_height=layout.setter("height"))
 
-        s1 = PrefSection("Detection")
-        s1.add_row(PrefToggle("Scam detection", "Flag phishing", key="detect_scam"))
-
-        s2 = PrefSection("Alerts")
-        s2.add_row(
-            PrefToggle(
-                "High-risk notifications",
-                "Vibrate and notify on score >= 80",
-                key="alert_high",
-            )
-        )
-        s2.add_row(
-            PrefToggle(
-                "Sound alerts",
-                "Play a tone for critical messages",
-                key="alert_sound",
-                default=False,
-            )
-        )
-
-        s3 = PrefSection("Performance")
-        s3.add_row(
+        s1 = PrefSection("Performance")
+        s1.add_row(
             PrefToggle(
                 "Battery saver",
-                "Reduce or disable background scanning frequency",
+                "Offload analysis to your remote PC",
                 key="battery_saver",
                 default=False,
-            )
-        )
-        s3.add_row(
-            PrefToggle(
-                "Run on startup",
-                "Start monitoring when device boots",
-                key="run_on_boot",
+                on_change=self._on_battery_saver_changed,
             )
         )
 
-        for s in (s1, s2, s3):
+        s2 = PrefSection("Simulate")
+
+        sim_risky_btn = Button(
+            text="Simulate Risky Message",
+            size_hint_y=None,
+            height=dp(48),
+            background_normal="",
+            background_color=(0.85, 0.38, 0.05, 1),
+        )
+        sim_safe_btn = Button(
+            text="Simulate Safe Message",
+            size_hint_y=None,
+            height=dp(48),
+            background_normal="",
+            background_color=(0.75, 0.60, 0.05, 1),
+        )
+
+        def _sim_risky(*_):
+            home = self.manager.get_screen("home")
+            home.receive_sms(
+                "URGENT: Your bank account has been suspended. Verify now at "
+                "http://secure-bank-login.000webhostapp.com"
+            )
+            self.manager.transition = SlideTransition(direction="right")
+            self.manager.current = "home"
+
+        def _sim_safe(*_):
+            home = self.manager.get_screen("home")
+            home.receive_sms("Hey, are you still coming to dinner tonight? Let me know by 6.")
+            self.manager.transition = SlideTransition(direction="right")
+            self.manager.current = "home"
+
+        sim_risky_btn.bind(on_press=_sim_risky)
+        sim_safe_btn.bind(on_press=_sim_safe)
+        s2.add_row(sim_risky_btn)
+        s2.add_row(sim_safe_btn)
+
+        for s in (s1, s2):
             layout.add_widget(s)
 
         scroll.add_widget(layout)
@@ -600,12 +673,21 @@ class PreferencesScreen(Screen):
         root.add_widget(scroll)
         self.add_widget(root)
 
+    def _on_battery_saver_changed(self, value):
+        """Persist the new battery_saver toggle state immediately on change."""
+        state = load_state()
+        state["battery_saver"] = value
+        save_state(state)
+
     def _back(self, *_):
+        """Navigate back to the home/feed screen."""
         self.manager.transition = SlideTransition(direction="right")
         self.manager.current = "home"
 
 
 class QuestionRow(BoxLayout):
+    """A binary Yes / No question widget used on the InterventionScreen.
+    """
     def __init__(self, question_text, on_answer=None, **kwargs):
         super().__init__(orientation="vertical", size_hint_y=None, height=dp(88), spacing=dp(8), **kwargs)
         self.on_answer = on_answer
@@ -640,12 +722,13 @@ class QuestionRow(BoxLayout):
         self.add_widget(btn_row)
 
     def set_answer(self, answer):
+        """Highlight the chosen button, dim the other, and notify the listener."""
         if answer == "Yes":
-            self.yes_btn.background_color = (0.25, 0.55, 0.25, 1)
-            self.no_btn.background_color = (0.35, 0.15, 0.15, 1)
+            self.yes_btn.background_color = (0.25, 0.55, 0.25, 1)  # brighter green
+            self.no_btn.background_color = (0.35, 0.15, 0.15, 1)   # dim red
         else:
-            self.no_btn.background_color = (0.55, 0.25, 0.25, 1)
-            self.yes_btn.background_color = (0.15, 0.35, 0.15, 1)
+            self.no_btn.background_color = (0.55, 0.25, 0.25, 1)   # brighter red
+            self.yes_btn.background_color = (0.15, 0.35, 0.15, 1)  # dim green
 
         if self.on_answer:
             self.on_answer(answer)
@@ -657,6 +740,7 @@ class InterventionScreen(Screen):
         self.seconds_left = 5
         self.current_message = ""
         self.current_risk_score = 0
+        self.current_dominant_tactic = "unknown"
         self.current_delay = 5
         self.q1_answer = None
         self.q2_answer = None
@@ -742,6 +826,7 @@ class InterventionScreen(Screen):
         self.add_widget(root)
 
     def on_pre_enter(self, *args):
+        """Reset and start the countdown timer each time this screen is shown."""
         self.seconds_left = self.current_delay
         self.proceed_btn.disabled = True
         self.proceed_btn.text = f"Proceed in {self.seconds_left}..."
@@ -750,6 +835,7 @@ class InterventionScreen(Screen):
         Clock.schedule_interval(self._tick, 1)
 
     def _tick(self, dt):
+        """Decrement the countdown; unlock the proceed button when it reaches zero."""
         self.seconds_left -= 1
         if self.seconds_left > 0:
             self.proceed_btn.text = f"Proceed in {self.seconds_left}..."
@@ -762,9 +848,11 @@ class InterventionScreen(Screen):
         return True
 
     def _set_q1_answer(self, answer):
+        """Store the user's response to question 1 ("Were you expecting this?")."""
         self.q1_answer = answer
 
     def _set_q2_answer(self, answer):
+        """Store the user's response to question 2 ("Does the sender look familiar?")."""
         self.q2_answer = answer
 
     def get_delay_seconds(
@@ -776,6 +864,11 @@ class InterventionScreen(Screen):
         false_starts=0,
         attention_score=None,
     ):
+        """Calculate the friction delay (in seconds) for an intervention.
+
+        The delay is personalised: riskier messages and more impulsive users
+        get longer pauses to promote deliberate decision-making.
+        """
         if risk_score >= 85:
             delay = 7
         elif risk_score >= 70:
@@ -785,13 +878,16 @@ class InterventionScreen(Screen):
         else:
             delay = 2
 
+        # Users who have clicked through risky messages before get extra time.
         delay += min(risky_clicks, 3)
 
+        # Impulsive users benefit from additional friction.
         if impulsivity_level == "high":
             delay += 2
         elif impulsivity_level == "moderate":
             delay += 1
 
+        # High attention vulnerability score adds further delay.
         if attention_score is not None:
             if attention_score >= 75:
                 delay += 3
@@ -800,13 +896,21 @@ class InterventionScreen(Screen):
             elif attention_score >= 30:
                 delay += 1
 
+        # False starts are a proxy for impulsive responding.
         delay += min(false_starts, 2)
 
+        # Reward users who have correctly reported suspicious messages.
         delay -= min(safe_reports, 3)
 
         return max(2, min(delay, 12))
 
-    def load_message(self, message_text, risk_score):
+    def load_message(self, message_text, risk_score, dominant_tactic="unknown"):
+        """Populate the intervention screen with data for the incoming high-risk message.
+
+        Reads the current user state to compute a personalised delay, then
+        updates all UI labels so they reflect this specific message.
+        Called by HomeScreen.on_analysis_done() before navigating here.
+        """
         state = load_state()
         risky_clicks = state.get("risky_clicks", 0)
         safe_reports = state.get("safe_reports", 0)
@@ -817,6 +921,7 @@ class InterventionScreen(Screen):
 
         self.current_message = message_text
         self.current_risk_score = risk_score
+        self.current_dominant_tactic = dominant_tactic
         self.current_delay = self.get_delay_seconds(
             risk_score,
             risky_clicks=risky_clicks,
@@ -826,6 +931,8 @@ class InterventionScreen(Screen):
             attention_score=attention_score,
         )
 
+        # Reset per-message state so stale answers from a previous message
+        # are never accidentally submitted with this one.
         self.seconds_left = self.current_delay
         self.q1_answer = None
         self.q2_answer = None
@@ -840,6 +947,11 @@ class InterventionScreen(Screen):
         )
 
     def _proceed(self, *_):
+        """User chose to proceed anyway. Log the decision and update state.
+
+        If the message was high-risk (>= 70), increment risky_clicks so future
+        delays for this user are longer (behavioural feedback loop).
+        """
         save_decision(
             "proceed",
             self.current_message,
@@ -847,19 +959,25 @@ class InterventionScreen(Screen):
             self.current_delay,
             self.q1_answer,
             self.q2_answer,
+            dominant_tactic=self.current_dominant_tactic,
         )
 
         state = load_state()
 
+        # Only penalise the user's profile for clearly high-risk decisions.
         if self.current_risk_score >= 70:
             state["risky_clicks"] = state.get("risky_clicks", 0) + 1
 
         save_state(state)
 
+        home = self.manager.get_screen("home")
         self.manager.transition = SlideTransition(direction="right")
         self.manager.current = "home"
+        home.refresh_stats()
 
     def _report(self, *_):
+        """User chose to report the message as suspicious.
+        """
         save_decision(
             "report",
             self.current_message,
@@ -867,21 +985,40 @@ class InterventionScreen(Screen):
             self.current_delay,
             self.q1_answer,
             self.q2_answer,
+            dominant_tactic=self.current_dominant_tactic,
         )
 
         state = load_state()
 
         if self.current_risk_score >= 70:
+            # Correctly identifying a dangerous message — reward with reduced future delay.
             state["safe_reports"] = state.get("safe_reports", 0) + 1
         elif self.current_risk_score < 50:
+            # Flagging a safe message as suspicious — track false-positive rate.
             state["false_reports"] = state.get("false_reports", 0) + 1
 
         save_state(state)
 
+        home = self.manager.get_screen("home")
         self.manager.transition = SlideTransition(direction="right")
         self.manager.current = "home"
+        home.refresh_stats()
 
     def _back(self, *_):
+        # User backed out without proceeding or reporting — log it so the
+        # message is never silently dropped from the decision log.
+        Clock.unschedule(self._tick)
+        save_decision(
+            "dismissed",
+            self.current_message,
+            self.current_risk_score,
+            self.current_delay,
+            self.q1_answer,
+            self.q2_answer,
+            dominant_tactic=self.current_dominant_tactic,
+        )
+        home = self.manager.get_screen("home")
+        home.refresh_stats()
         self.manager.transition = SlideTransition(direction="right")
         self.manager.current = "home"
 
@@ -889,14 +1026,6 @@ class InterventionScreen(Screen):
 class AttentionTaskScreen(Screen):
     """
     A simple go / no-go style attention task.
-
-    Green = TAP
-    Red = DO NOT TAP
-
-    We keep compatibility with storage.py by still saving:
-    - reaction times for correct green taps
-    - false_starts as:
-        anticipatory taps + red-tap commission errors
     """
 
     def __init__(self, **kwargs):
@@ -973,9 +1102,11 @@ class AttentionTaskScreen(Screen):
         self.add_widget(root)
 
     def on_pre_enter(self, *args):
+        """Reset the task to its initial state each time the screen is entered."""
         self._reset_task()
 
     def _reset_task(self):
+        """Clear all trial data and return UI to the pre-start state."""
         Clock.unschedule(self._show_stimulus)
         Clock.unschedule(self._close_response_window)
 
@@ -999,11 +1130,15 @@ class AttentionTaskScreen(Screen):
         self.tap_btn.text = "Start"
 
     def _handle_tap(self, *_):
+        """Handle every tap on the main button, routing to the correct action.
+        """
         if self.finished:
+            # Task complete — restart on next tap.
             self._reset_task()
             return
 
         if not self.awaiting_stimulus and not self.response_open:
+            # Idle state (between trials or at start) — advance to next trial.
             self._start_next_trial()
             return
 
@@ -1019,12 +1154,15 @@ class AttentionTaskScreen(Screen):
             self.signal_lbl.text = "TOO EARLY"
             self.signal_lbl.color = C_AMBER
 
+            # Cancel the scheduled stimulus and reset to idle so the user
+            # can tap "Continue" to move on.
             Clock.unschedule(self._show_stimulus)
             self.awaiting_stimulus = False
             self.tap_btn.text = "Continue"
             return
 
         if self.response_open:
+            # Response window is open — evaluate the tap.
             Clock.unschedule(self._close_response_window)
 
             # correct go response
@@ -1052,6 +1190,7 @@ class AttentionTaskScreen(Screen):
             self._finish_trial()
 
     def _start_next_trial(self):
+        """Set up the next trial: flip flags and schedule the random-delay stimulus."""
         if self.current_trial >= self.total_trials:
             self._finish_task()
             return
@@ -1065,11 +1204,12 @@ class AttentionTaskScreen(Screen):
         self.signal_lbl.text = "WAIT"
         self.signal_lbl.color = C_BLUE
         self.tap_btn.text = "Tap"
-
         delay = random.uniform(1.2, 2.5)
         self.stimulus_event = Clock.schedule_once(self._show_stimulus, delay)
 
     def _show_stimulus(self, dt):
+        """Display either a GO (tap) or NO-GO (withhold) signal.
+        """
         self.awaiting_stimulus = False
         self.response_open = True
 
@@ -1089,6 +1229,7 @@ class AttentionTaskScreen(Screen):
         self.timeout_event = Clock.schedule_once(self._close_response_window, 1.0)
 
     def _close_response_window(self, dt):
+        """Handle trial timeout: score as omission (GO) or correct withhold (NO-GO)."""
         if not self.response_open:
             return
 
@@ -1104,7 +1245,6 @@ class AttentionTaskScreen(Screen):
             self.signal_lbl.text = "MISSED"
             self.signal_lbl.color = C_AMBER
 
-        # correct withholding on no-go
         elif self.current_trial_type == "no_go":
             self.result_lbl.text = "Correctly ignored NO TAP"
             self.signal_lbl.text = "GOOD"
@@ -1113,10 +1253,12 @@ class AttentionTaskScreen(Screen):
         self._finish_trial()
 
     def _finish_trial(self):
+        """Increment trial counter, update progress, and decide whether to end the task."""
         self.current_trial += 1
         self.progress_lbl.text = f"Trials completed: {self.current_trial}/{self.total_trials}"
 
         if self.current_trial < self.total_trials:
+            # More trials remaining — set button to advance to the next one.
             self.tap_btn.text = "Next Trial"
             self.awaiting_stimulus = False
             self.response_open = False
@@ -1158,12 +1300,14 @@ class AttentionTaskScreen(Screen):
 
 
 class RootLayout(BoxLayout):
+    """Top-level layout: ScreenManager stacked above the persistent BottomNav bar."""
     def __init__(self, **kwargs):
         super().__init__(orientation="vertical", **kwargs)
         add_bg(self, BG0)
 
         self.sm = ScreenManager()
 
+        # Instantiate all screens up front so navigation between them is instant.
         self.home = HomeScreen(name="home")
         self.prefs = PreferencesScreen(name="prefs")
         self.intervention = InterventionScreen(name="intervention")
@@ -1178,6 +1322,7 @@ class RootLayout(BoxLayout):
         self.add_widget(self.nav)
 
     def _nav(self, key):
+        """Switch the active screen and sync the bottom nav tab highlight."""
         self.nav.set_active(key)
         self.sm.transition = SlideTransition(direction="left" if key != "home" else "right")
         self.sm.current = key
@@ -1301,9 +1446,11 @@ class RewardTaskScreen(Screen):
         self.add_widget(root)
 
     def on_pre_enter(self, *args):
+        """Shuffle trials and reset counters each time the screen is entered."""
         self._reset_task()
 
     def _reset_task(self):
+        """Re-randomise the trial order and clear all per-run counters."""
         random.shuffle(self.trials)
         self.index = 0
         self.risky_opens = 0
@@ -1316,6 +1463,7 @@ class RewardTaskScreen(Screen):
         self._show_trial()
 
     def _show_trial(self):
+        """Display the current trial message, or end the task if all trials are done."""
         if self.index >= len(self.trials):
             self._finish_task()
             return
@@ -1325,11 +1473,15 @@ class RewardTaskScreen(Screen):
         self.message_lbl.text = trial["text"]
 
     def _answer(self, choice):
+        """Record the user's choice for the current trial and advance.
+        """
         if self.finished:
             return
 
         trial = self.trials[self.index]
 
+        # Only opening a reward-lure message counts as a risky open.
+        # Ignoring or reporting any message — risky or not — counts as safe.
         if trial["reward_lure"] and choice == "open":
             self.risky_opens += 1
         elif choice in ("ignore", "report"):
@@ -1339,6 +1491,7 @@ class RewardTaskScreen(Screen):
         self._show_trial()
 
     def _finish_task(self):
+        """Persist results, compute scores, and display the summary."""
         self.finished = True
 
         state = save_reward_summary(
@@ -1359,31 +1512,39 @@ class RewardTaskScreen(Screen):
             f"Behavioral Score: {behavioral_score}/100"
         )
 
+        # Disable action buttons so the user can't accidentally submit more answers.
         self.open_btn.disabled = True
         self.ignore_btn.disabled = True
         self.report_btn.disabled = True
 
     def _back(self, *_):
+        """Navigate back to the home screen."""
         self.manager.transition = SlideTransition(direction="right")
         self.manager.current = "home"
 
 
 class RunApp(App):
-    title = "RiskGuard"
+    title = "NoRush"
 
     def build(self):
+        """Build and return the root widget; called once by the Kivy framework."""
         Window.clearcolor = BG0
         self._root_layout = RootLayout()
         return self._root_layout
 
     def on_start(self):
+        """Start the SMS receiver after the UI is fully initialised.
+
+        Called by Kivy after build() completes and the window is shown.
+        """
         home = self._root_layout.home
-        self._bridge = create_bridge_for_app(home)
-        self._bridge.start()
+        self._receiver = create_receiver_for_app(home)
+        self._receiver.start(home.receive_sms)
 
     def on_stop(self):
-        if hasattr(self, "_bridge"):
-            self._bridge.stop()
+        """Clean up the SMS receiver when the app is closed or backgrounded."""
+        if hasattr(self, "_receiver"):
+            self._receiver.stop()
 
 
 def main():
