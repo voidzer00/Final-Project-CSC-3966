@@ -1,12 +1,37 @@
 import json
 from datetime import datetime
 from pathlib import Path
-
-LOG_FILE = Path("decision_log.json")
-STATE_FILE = Path("user_state.json")
+import os
 
 
-def save_decision(action, message_text, risk_score, delay, q1_answer=None, q2_answer=None):
+def _get_data_dir() -> Path:
+    """
+    Returns a persistent writable directory that survives app restarts.
+    Tries multiple methods in order of reliability on modern Android.
+    """
+    env = os.environ.get("ANDROID_PRIVATE")
+    if env:
+        p = Path(env)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            print(f"[Storage] Using ANDROID_PRIVATE: {p}")
+            return p
+        except Exception as e:
+            print(f"[Storage] ANDROID_PRIVATE failed: {e}")
+
+    # Method 4: desktop fallback
+    print("[Storage] Using cwd fallback")
+    return Path(".")
+
+
+_DATA_DIR = _get_data_dir()
+
+LOG_FILE   = _DATA_DIR / "decision_log.json"
+STATE_FILE = _DATA_DIR / "user_state.json"
+
+
+
+def save_decision(action, message_text, risk_score, delay, q1_answer=None, q2_answer=None, dominant_tactic="unknown"):
     entry = {
         "timestamp": datetime.now().isoformat(),
         "action": action,
@@ -15,6 +40,7 @@ def save_decision(action, message_text, risk_score, delay, q1_answer=None, q2_an
         "delay": delay,
         "q1_answer": q1_answer,
         "q2_answer": q2_answer,
+        "dominant_tactic": dominant_tactic,
     }
 
     data = []
