@@ -33,7 +33,7 @@ def _fingerprint(text: str) -> str:
 class AndroidSMSReceiver:
     def __init__(self, dedup_window=5.0):
         self._dedup_window = dedup_window
-        self._seen = {}  
+        self._seen = {}  # fp -> timestamp
         self._on_sms = None
         self._receiver = None
 
@@ -68,7 +68,7 @@ class AndroidSMSReceiver:
         self._receiver = None
 
 
-            def _on_permissions_result(self, permissions, grants):
+    def _on_permissions_result(self, permissions, grants):
         print(f"[SMS] Permission result: {list(zip(permissions, grants))}")
 
         if not all(grants):
@@ -88,7 +88,10 @@ class AndroidSMSReceiver:
 
         self._receiver.start()
         print("[SMS] Receiver started")
-        
+
+    # -------------------------
+    # Broadcast handler
+    # -------------------------
     def _on_broadcast(self, context, intent):
 
         try:
@@ -141,13 +144,12 @@ class AndroidSMSReceiver:
             print("[SMS] Broadcast crash")
             traceback.print_exc()
 
-    # -------------------------
-    # Delivery + dedup
-    # -------------------------
+    #delivery, cleaning, dedup 
     def _deliver(self, raw: str):
         clean = _normalise(raw)
 
         if not clean:
+            print("[SMS] Dropped empty after normalize")
             return
 
         fp = _fingerprint(clean)
@@ -155,6 +157,7 @@ class AndroidSMSReceiver:
 
         last = self._seen.get(fp)
         if last and (now - last) < self._dedup_window:
+            print(f"[SMS] Duplicate blocked fp={fp}")
             return
 
         self._seen[fp] = now
@@ -162,9 +165,10 @@ class AndroidSMSReceiver:
         print(f"[SMS] DELIVER → {clean[:80]}")
 
         if not self._on_sms:
+            print("[SMS] No callback registered")
             return
 
-        # Kivy-safe dispatch
+        #i dont know what was causing this to crash, but doing the entire thing again seems to have fixed it.
         try:
             from kivy.clock import Clock
             Clock.schedule_once(lambda dt: self._safe_callback(clean), 0)
@@ -182,4 +186,5 @@ class AndroidSMSReceiver:
 
 def create_receiver_for_app(home_screen):
     return AndroidSMSReceiver()
+
 
