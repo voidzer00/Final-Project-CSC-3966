@@ -1,9 +1,8 @@
 [app]
 
 # App identity
-title = RiskGuard
-package.name = riskguard
-package.domain = com.yourname
+title = NoFlow
+package.name = noflow
 
 # Source
 source.dir = .
