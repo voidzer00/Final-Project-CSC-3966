@@ -48,8 +48,8 @@
 
 # BUILDING THE APK
 # ----------------
-# WARNING : BUILDING THIS APK CAN BE TIMECONSUMING. THERE ARE SEVERAL DEPENDANCIES TO BE MET. IF YOU WANT TO SEE THE APK, JUST LOOK IN THE GITHUB FOLDER.
-# The APK is here : https://drive.google.com/file/d/1w-0WB0RXwVOcXoqHPmh7BnvSKw-RzL9v/view?usp=sharing
+# WARNING : BUILDING THIS APK CAN BE TIMECONSUMING. THERE ARE SEVERAL DEPENDANCIES TO BE MET. IF YOU WANT TO SEE THE APK:
+# The APK is here : https://drive.google.com/file/d/1AkkhdlExktJZ_teA6wo-X-gOrgKPafK3/view?usp=sharing
 #
 # 1. Install dependencies 
 #      sudo apt install git zip unzip openjdk-17-jdk python3-pip
