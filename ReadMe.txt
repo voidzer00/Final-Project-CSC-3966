@@ -57,6 +57,9 @@
 #
 # 2. From the project directory (Make sure that the .py files and buildozer.spec file are in the same directory.
 #      buildozer android debug
+#    if the build fails at the gradle section, execute:
+#    ./gradlew assembleDebug -x validateSigningDebug  
+#    in the same folder as your generated gradle file.
 #
 #    First run downloads the Android SDK/NDK (~5 GB) and takes 20-40 min.
 #    Output APK: bin/riskguard-0.1-arm64-v8a-debug.apk
